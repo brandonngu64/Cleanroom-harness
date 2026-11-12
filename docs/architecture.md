@@ -11,9 +11,9 @@ The core harness does not depend on Docker, a target language, or a test framewo
 | `runner.py` | Command execution interface, results, and local implementation | Implemented |
 | `tools.py` | Validate and dispatch model-requested operations | Implemented |
 | `agent.py` | Single-agent loop, normalized model interface, limits, and usage | Implemented |
-| `claude.py` | Translate the model interface to the Claude API | Planned |
+| `claude.py` | Translate the model interface to the Claude API | Implemented; SDK tested with simulated HTTP |
 | `run.py` | Prepare a copy, establish a baseline, run the agent, verify, save, clean up | Planned |
-| `report.py` | Save observations, logs, metrics, and the final patch | Planned |
+| `report.py` | Save supplied observations, transcript, metrics, and patch | Implemented |
 | `cli.py` | Parse user configuration and invoke the coordinator | Planned |
 
 ## Execution boundary
@@ -84,8 +84,9 @@ agent's conversation and token limits.
 `CodingAgent` accepts a `ModelClient` and a configured `ToolDispatcher`.
 `ModelClient.complete()` receives the conversation, tool definitions, an output
 token allowance, and a request timeout. It returns a normalized `ModelReply`.
-There is no model SDK dependency in the loop. The Claude API adapter remains a
-separate next component; no live model integration has been verified yet.
+There is no model SDK dependency in the loop. The Claude API adapter is a separate
+component, tested using the actual SDK with simulated HTTP. No live model call
+has been verified yet.
 
 Messages represent system/user text, assistant responses with tool calls, and
 tool results matched by call ID. An adapter can preserve original provider
@@ -121,6 +122,52 @@ coordinator must perform independent final verification before claiming success.
 Tests use scripted model replies and actual workspace/runner operations, including
 a calculator fix that changes a failing prewritten check to a passing one. This
 verifies control flow without a model API call or an autonomous reasoning claim.
+
+## Claude API adapter
+
+`ClaudeClient` implements the model interface and loads the optional Anthropic
+SDK when constructed. The caller selects the model; credentials may come from
+`ANTHROPIC_API_KEY` or an explicitly supplied SDK client. Owned clients support
+context-manager cleanup; injected clients remain owned by their caller.
+
+System text is passed in the API's system field. Generic tool schemas become
+`input_schema` definitions. Assistant tool calls are followed immediately by one
+user message containing the complete matching batch of tool results. Original
+assistant content is retained in `provider_data`, preserving signed thinking
+blocks when the conversation is sent again.
+
+Automatic SDK retries are disabled per request. The remaining request timeout
+is forwarded to the transport. API and transport failures become `ModelError`.
+Normal completion, tool use, output/context exhaustion, and refusals are mapped
+to the loop's stop reasons. Server-tool pause turns and custom stop-sequence
+responses are explicitly unsupported by this initial adapter.
+
+Input usage includes ordinary input, cache creation, and cache reads. Native
+response metadata is preserved in the transcript. Tests use SDK 2.8.0 and a
+simulated HTTP transport, including a complete scripted edit/verify/report flow.
+They do not make paid API calls or establish live account/model access.
+
+## Report persistence
+
+`RunReport` holds task/repository/model metadata, optional agent/baseline/final
+results, a source revision, execution configuration, a supplied patch, and errors.
+`save_report()` creates a new directory with `report.json`, `transcript.json`,
+and `changes.patch`. The summary separates model completion from verification
+command status. Missing final verification is reported as `not_run`.
+
+Report serialization is checked before creating the directory. Existing output
+directories are never overwritten. Disk errors propagate and may leave partial
+files; the summary is written last. The writer does not prepare repositories,
+run verification, compute patches, or calculate API costs. Those observations
+will come from the coordinator and execution configuration.
+
+## Package setup
+
+`pyproject.toml` installs the `harness` package from `src`, configures pytest's
+source path, and declares optional `dev` and `claude` extras. The core uses the
+standard library. There is no console entry point until the CLI exists.
+The README documents installation, programmatic use, current limits, and the
+remaining integration work.
 
 ## Planned run lifecycle
 
