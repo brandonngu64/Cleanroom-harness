@@ -12,9 +12,9 @@ The core harness does not depend on Docker, a target language, or a test framewo
 | `tools.py` | Validate and dispatch model-requested operations | Implemented |
 | `agent.py` | Single-agent loop, normalized model interface, limits, and usage | Implemented |
 | `claude.py` | Translate the model interface to the Claude API | Implemented; SDK tested with simulated HTTP |
-| `run.py` | Prepare a copy, establish a baseline, run the agent, verify, save, clean up | Planned |
+| `run.py` | Prepare copies, establish a baseline, run the agent, verify, save, clean up | Implemented |
 | `report.py` | Save supplied observations, transcript, metrics, and patch | Implemented |
-| `cli.py` | Parse user configuration and invoke the coordinator | Planned |
+| `cli.py` | Parse user configuration, invoke the coordinator, and report outcomes | Implemented |
 
 ## Execution boundary
 
@@ -165,11 +165,93 @@ will come from the coordinator and execution configuration.
 
 `pyproject.toml` installs the `harness` package from `src`, configures pytest's
 source path, and declares optional `dev` and `claude` extras. The core uses the
-standard library. There is no console entry point until the CLI exists.
+standard library. The `cleanroom` entry point and `python -m harness` both call
+`harness.cli.main`.
 The README documents installation, programmatic use, current limits, and the
 remaining integration work.
 
-## Planned run lifecycle
+## Run coordination
+
+`run_task(RunConfig(...), client, output_directory=..., runner=...)` owns a complete
+execution. It accepts a configured model client and runner without importing a
+provider SDK. The default execution implementation is `LocalRunner`.
+
+The initial source contract is a clean local Git working-tree root with a recorded
+commit. Tracked/staged changes and untracked files are rejected; ignored local
+files are omitted. Existing tracked regular files are supported. Symlinks and
+submodules are rejected, and Git LFS hydration is not implemented. Editable-file
+configuration is explicit and cannot approve files outside the repository.
+
+A local clone uses `--no-hardlinks` and `--dissociate` so the disposable snapshot
+does not borrow source object files. Git helpers discard inherited Git path/config
+injection overrides, use an empty hooks directory, restrict protocols to local
+files, and disable external diff/text conversion helpers. Read-only source status
+checks respect the user's configuration. Effective `core.autocrlf` and `core.eol`
+are captured and stored in the disposable clone and report; remaining disposable
+Git operations ignore global/system configuration. This keeps clean-tree checks
+and saved patches compatible with local or global line-ending settings. The
+source commit is checked out detached. This is preparation for trusted repositories,
+not an execution security boundary. Git and subprocess working directories must
+fit the platform's working-directory limits; the OS temp location is used by default.
+
+Separate physical copies are prepared for baseline execution, the coding agent,
+and final verification. Baseline command side effects do not enter the agent copy.
+Final verification starts from the recorded commit and receives only approved
+regular files from the agent's copy. Unapproved tracked edits are recorded as a
+policy error and excluded from verification and the saved patch. Generated or
+untracked files are not transferred. The original repository is never the runner's
+working directory and the coordinator does not apply changes back to it.
+
+Patch extraction uses the pristine Git index, regardless of edits to Git metadata
+in the agent copy. Patch bytes preserve newline content; external diff drivers and
+text conversion are disabled. Tests check the saved patch with `git apply --check`
+against the unchanged original commit.
+
+Failed baseline assertions are normal input to the agent. A baseline startup error,
+timeout, or missing exit status stops the run before any model request. Agent limits
+and model errors still lead to a final verification attempt when preparation and
+approved-file transfer remain possible. Unexpected failures record available
+observations, errors, and a traceback. Interruptions preserve the available patch
+without starting additional verification. An unexpected exception may prevent an
+AgentResult from being returned, so its partial token usage/transcript is unavailable.
+
+`RunOutcome` contains the report, artifact directory, any cleanup failure, and a
+structured interruption flag for the CLI's exit status.
+Reports are persisted before cleanup. A save failure raises `ReportSaveError`
+carrying the report and retained scratch directory. Cleanup verifies the owned
+directory remains inside its recorded temporary parent before recursive removal.
+Cleanup failures preserve the directory and save a warning when possible.
+
+Agent limits apply to the model/tool phase. Baseline/final commands and Git
+operations have their own timeouts. Recorded execution duration excludes artifact
+writing and cleanup. This pipeline keeps command verification separate from model
+completion and does not infer that passing tests proves a task was solved.
+
+## CLI and example
+
+`cleanroom run` takes a local Git root, task, model, new external output directory,
+approved editable paths, and execution limits. The test command is passed after
+`--` as an argument sequence without shell-string splitting. The CLI chooses the
+initial Claude adapter; the agent loop and runner contracts remain independent.
+The model ID can come from `CLEANROOM_MODEL`, and the API key comes from
+`ANTHROPIC_API_KEY`. Help works without credentials or the optional SDK.
+Package installation and the module entry point are verified. The generated
+Windows `.exe` launcher is blocked by this machine's group policy; the documented
+module invocation remains available without changing the policy.
+
+Exit `0` requires model completion, passing final verification, and no run or
+cleanup error. Failed verification or incomplete model work exits `1`; invalid
+arguments exit `2`; setup/execution/persistence errors exit `3`; interruption exits
+`130`. Output paths and available status/summary information are printed. A report
+save failure displays the retained scratch directory. Interruptions during saving
+are wrapped with the retained report/workspace rather than losing recovery data.
+
+`examples/buggy_calculator` contains an intentionally broken function, four
+prewritten unittest cases, and instructions for making a separate committed Git
+fixture. CLI integration tests use this example with scripted model replies and
+real Git repositories and subprocess checks. No live model call is implied.
+
+## Run lifecycle
 
 1. Validate the task, source repository, trusted execution configuration, and limits.
 2. Prepare a disposable repository copy and record its starting revision.
